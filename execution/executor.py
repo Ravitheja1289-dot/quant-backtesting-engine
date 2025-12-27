@@ -229,7 +229,7 @@ def execute_strategy(
     if len(valid_sums) > 0:
         max_deviation = (valid_sums - 1.0).abs().max()
         assert max_deviation < 1e-6, f"Daily weight sums deviate from 1.0: max={max_deviation}"
-        print(f"  ✓ Daily weights sum ≈ 1.0 (max deviation: {max_deviation:.2e})")
+        print(f"  [OK] Daily weights sum ~= 1.0 (max deviation: {max_deviation:.2e})")
     else:
         raise ValueError("No valid daily weights found")
     
@@ -237,19 +237,19 @@ def execute_strategy(
     first_rebalance = rebalance_dates[0]
     weights_after_first = daily_weights.loc[first_rebalance:]
     assert not weights_after_first.isna().any().any(), "Daily weights contain NaNs after first rebalance"
-    print("  ✓ No NaNs in daily weights (after first rebalance)")
+    print("  [OK] No NaNs in daily weights (after first rebalance)")
     
     # Check 3: No infs
     assert not daily_weights.isin([np.inf, -np.inf]).any().any(), "Daily weights contain infinities"
-    print("  ✓ No infinities in daily weights")
+    print("  [OK] No infinities in daily weights")
     
-    # Check 4: Turnover ≥ 0
+    # Check 4: Turnover >= 0
     assert (turnover_series >= 0).all(), "Turnover must be non-negative"
-    print("  ✓ Turnover ≥ 0")
+    print("  [OK] Turnover >= 0")
     
-    # Check 5: Transaction costs ≥ 0
+    # Check 5: Transaction costs >= 0
     assert (transaction_costs >= 0).all(), "Transaction costs must be non-negative"
-    print("  ✓ Transaction costs ≥ 0")
+    print("  [OK] Transaction costs >= 0")
     
     # Print diagnostics (temporary)
     print("\nExecution diagnostics:")

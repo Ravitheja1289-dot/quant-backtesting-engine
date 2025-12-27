@@ -57,32 +57,52 @@ backtest_results = run_backtest(
     initial_capital=1.0,
 )
 
-portfolio_returns = backtest_results['portfolio_returns']
+gross_returns = backtest_results['gross_returns']
+net_returns = backtest_results['net_returns']
+daily_costs = backtest_results['daily_costs']
 equity = backtest_results['equity']
 
-print(f"  Portfolio returns: {len(portfolio_returns)} days")
+print(f"  Gross returns: {len(gross_returns)} days")
+print(f"  Net returns: {len(net_returns)} days")
 print(f"  Equity curve: {len(equity)} days")
 
 # Validate results
 print("\n[3/3] Validating backtest results...")
 
-# Check 1: Portfolio returns exist for all days
-print(f"  Portfolio returns shape: {portfolio_returns.shape}")
-print(f"  Expected: ({len(returns)},)")
-assert len(portfolio_returns) == len(returns), "Portfolio returns length mismatch"
-print("  ✓ Portfolio returns for all days")
+# Check 1: Portfolio returns exist for all days (minus one for lagging)
+print(f"  Gross returns shape: {gross_returns.shape}")
+print(f"  Net returns shape: {net_returns.shape}")
+print(f"  Expected: ({len(returns) - 1},) (one less due to weight lagging)")
+assert len(gross_returns) == len(returns) - 1, "Gross returns length mismatch"
+assert len(net_returns) == len(returns) - 1, "Net returns length mismatch"
+print("  ✓ Portfolio returns for all days (with lag)")
 
 # Check 2: No NaNs in portfolio returns
-assert not portfolio_returns.isna().any(), "Portfolio returns contain NaNs"
+assert not gross_returns.isna().any(), "Gross returns contain NaNs"
+assert not net_returns.isna().any(), "Net returns contain NaNs"
 print("  ✓ No NaNs in portfolio returns")
 
-# Check 3: Equity curve starts at 1.0
-assert abs(equity.iloc[0] - 1.0) < 1e-10, f"Equity should start at 1.0, got {equity.iloc[0]}"
-print("  ✓ Equity starts at 1.0")
+# Check 3: Net returns <= Gross returns (costs always reduce returns)
+assert (net_returns <= gross_returns).all(), "Net returns exceed gross returns"
+print("  ✓ Net returns <= Gross returns")
 
-# Check 4: Equity is always positive
+# Check 4: Equity curve evolves correctly
+# Equity should compound returns: equity[0] = 1.0 * (1 + r[0])
+expected_first_equity = 1.0 * (1.0 + net_returns.iloc[0])
+assert abs(equity.iloc[0] - expected_first_equity) < 1e-10, \
+    f"Equity[0] should be {expected_first_equity}, got {equity.iloc[0]}"
+print(f"  ✓ Equity evolves correctly (first = {equity.iloc[0]:.6f})")
+
+# Check 5: Equity is always positive
 assert (equity > 0).all(), "Equity curve goes negative"
 print("  ✓ Equity always positive")
+
+# Check 6: Daily costs sum to transaction costs
+total_daily_costs = daily_costs.sum()
+total_transaction_costs = transaction_costs.sum()
+assert abs(total_daily_costs - total_transaction_costs) < 1e-10, \
+    f"Daily costs sum {total_daily_costs} != transaction costs {total_transaction_costs}"
+print(f"  ✓ Daily costs sum to transaction costs")
 
 # Print summary statistics
 print("\n" + "=" * 60)
@@ -91,19 +111,21 @@ print("=" * 60)
 
 final_equity = equity.iloc[-1]
 total_return = (final_equity - 1.0) * 100
-mean_daily_return = portfolio_returns.mean()
-daily_vol = portfolio_returns.std()
-sharpe_daily = portfolio_returns.mean() / portfolio_returns.std() if portfolio_returns.std() > 0 else 0
+mean_daily_return_gross = gross_returns.mean()
+mean_daily_return_net = net_returns.mean()
+daily_vol = net_returns.std()
+sharpe_daily = net_returns.mean() / net_returns.std() if net_returns.std() > 0 else 0
 sharpe_annualized = sharpe_daily * (252 ** 0.5)
 
 print(f"\nPerformance:")
 print(f"  Initial capital: $1.00")
 print(f"  Final equity: ${final_equity:.4f}")
 print(f"  Total return: {total_return:.2f}%")
-print(f"  Trading days: {len(portfolio_returns)}")
+print(f"  Trading days: {len(net_returns)}")
 
 print(f"\nRisk/Return:")
-print(f"  Mean daily return: {mean_daily_return * 100:.4f}%")
+print(f"  Mean daily return (gross): {mean_daily_return_gross * 100:.4f}%")
+print(f"  Mean daily return (net): {mean_daily_return_net * 100:.4f}%")
 print(f"  Daily volatility: {daily_vol * 100:.4f}%")
 print(f"  Sharpe ratio (annualized): {sharpe_annualized:.2f}")
 
@@ -111,11 +133,12 @@ print(f"\nTransaction Costs:")
 print(f"  Total costs: {transaction_costs.sum():.6f}")
 print(f"  Mean cost per rebalance: {transaction_costs[1:].mean():.6f}")
 print(f"  Rebalance count: {len(transaction_costs)}")
+print(f"  Cost impact on returns: {(mean_daily_return_gross - mean_daily_return_net) * 100:.6f}% daily")
 
-print(f"\nPortfolio Returns:")
-print(f"  Min: {portfolio_returns.min() * 100:.2f}%")
-print(f"  Max: {portfolio_returns.max() * 100:.2f}%")
-print(f"  Median: {portfolio_returns.median() * 100:.4f}%")
+print(f"\nNet Portfolio Returns:")
+print(f"  Min: {net_returns.min() * 100:.2f}%")
+print(f"  Max: {net_returns.max() * 100:.2f}%")
+print(f"  Median: {net_returns.median() * 100:.4f}%")
 
 print("\n" + "=" * 60)
 print("✓ Portfolio engine integration test passed")

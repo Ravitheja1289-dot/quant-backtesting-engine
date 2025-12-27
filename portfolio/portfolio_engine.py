@@ -32,7 +32,7 @@ def calculate_portfolio_returns(
     daily_weights: pd.DataFrame,
     returns: pd.DataFrame,
     transaction_costs: pd.Series,
-) -> pd.Series:
+) -> Dict[str, pd.Series]:
     """Calculate portfolio returns from weights, asset returns, and costs.
     
     Parameters
@@ -44,29 +44,31 @@ def calculate_portfolio_returns(
         Daily asset returns (dates × assets)
         Shape: (n_days, n_assets)
     transaction_costs : pd.Series
-        Transaction costs on rebalance dates
+        Transaction costs on rebalance dates (as fraction of portfolio)
         Index: rebalance_dates
         
     Returns
     -------
-    pd.Series
-        Daily portfolio returns
+    dict
+        {
+            'gross_returns': pd.Series (before costs),
+            'net_returns': pd.Series (after costs),
+            'daily_costs': pd.Series (costs on each day, 0 on non-rebalance),
+        }
         
     Notes
     -----
     Portfolio return formula:
-        r_portfolio_t = sum(w_{t-1}^i * r_t^i) - tc_t
+        r_portfolio_t = sum(w_{t-1}^i * r_t^i)
         
-    Where:
-        - w_{t-1}^i is weight of asset i at END of day t-1 (after rebalance or drift)
-        - r_t^i is return of asset i on day t
-        - tc_t is transaction cost on day t (only on rebalance dates, 0 otherwise)
+    ⚠️ CRITICAL: Use YESTERDAY's weights with TODAY's returns to avoid look-ahead bias
         
-    Transaction costs reduce portfolio return on rebalance dates.
+    Transaction costs are tracked separately and subtracted from returns for clean accounting.
+    This makes cost attribution easier later.
     
     Example:
-        If turnover = 5% and cost = 10 bps, then tc = 0.05 * 0.001 = 0.05 bps
-        This is subtracted from portfolio return on that rebalance date.
+        If turnover = 5% and cost = 10 bps, then tc = 0.05 * 0.001 = 0.0005 (5 bps of portfolio)
+        This is subtracted from gross return on that rebalance date.
     """
     # Align indices
     common_dates = daily_weights.index.intersection(returns.index)
@@ -79,9 +81,19 @@ def calculate_portfolio_returns(
     
     # Calculate gross portfolio returns (before costs)
     # r_portfolio_t = sum(w_{t-1}^i * r_t^i)
-    # We use current day's weights with current day's returns
-    # (weights are already lagged - they represent position entering the day)
-    gross_returns = (daily_weights * returns).sum(axis=1)
+    # ⚠️ CRITICAL: Use YESTERDAY's weights with TODAY's returns to avoid look-ahead bias
+    # daily_weights[t] = position at END of day t
+    # returns[t] = return DURING day t
+    # So we need weights[t-1] with returns[t]
+    
+    # Shift weights forward by 1 to align with returns
+    lagged_weights = daily_weights.shift(1)
+    
+    # Drop first row (no lagged weights for first day)
+    lagged_weights = lagged_weights.dropna(how='all')
+    returns_aligned = returns.loc[lagged_weights.index]
+    
+    gross_returns = (lagged_weights * returns_aligned).sum(axis=1)
     
     # Create transaction cost series aligned to daily returns
     # (zero on non-rebalance dates)
@@ -91,26 +103,38 @@ def calculate_portfolio_returns(
             daily_costs.loc[date] = cost
     
     # Net portfolio returns = gross returns - transaction costs
-    portfolio_returns = gross_returns - daily_costs
+    net_returns = gross_returns - daily_costs
     
     # Sanity checks
-    assert not portfolio_returns.isna().any(), "Portfolio returns contain NaNs"
-    assert not portfolio_returns.isin([np.inf, -np.inf]).any(), "Portfolio returns contain infinities"
+    assert not gross_returns.isna().any(), "Gross returns contain NaNs"
+    assert not gross_returns.isin([np.inf, -np.inf]).any(), "Gross returns contain infinities"
+    assert not net_returns.isna().any(), "Net returns contain NaNs"
+    assert not net_returns.isin([np.inf, -np.inf]).any(), "Net returns contain infinities"
     
-    portfolio_returns.name = 'portfolio_returns'
-    return portfolio_returns
+    gross_returns.name = 'gross_returns'
+    net_returns.name = 'net_returns'
+    daily_costs.name = 'daily_costs'
+    
+    return {
+        'gross_returns': gross_returns,
+        'net_returns': net_returns,
+        'daily_costs': daily_costs,
+    }
 
 
 def calculate_equity_curve(
     portfolio_returns: pd.Series,
+    daily_costs: pd.Series,
     initial_capital: float = 1.0,
 ) -> pd.Series:
-    """Calculate equity curve from portfolio returns.
+    """Calculate equity curve from portfolio returns and costs.
     
     Parameters
     ----------
     portfolio_returns : pd.Series
-        Daily portfolio returns
+        Daily gross portfolio returns (before costs)
+    daily_costs : pd.Series
+        Daily transaction costs (as fraction of portfolio)
     initial_capital : float, default=1.0
         Starting capital (normalized to 1.0)
         
@@ -121,23 +145,43 @@ def calculate_equity_curve(
         
     Notes
     -----
-    Equity formula:
-        equity_t = equity_{t-1} * (1 + r_portfolio_t)
+    Equity formula (iterative):
+        equity_0 = initial_capital
+        equity_t = equity_{t-1} * (1 + R_t^portfolio) - equity_{t-1} * cost_t
         
     Or equivalently:
-        equity_t = initial_capital * prod(1 + r_portfolio_s) for s in [0, t]
+        equity_t = equity_{t-1} * (1 + R_t^portfolio - cost_t)
         
-    This is the compounded wealth over time.
+    This applies returns first, then subtracts costs (which are percentages of portfolio value).
     """
-    # Cumulative product: (1 + r_0) * (1 + r_1) * ... * (1 + r_t)
-    equity = initial_capital * (1.0 + portfolio_returns).cumprod()
+    # Align indices
+    assert portfolio_returns.index.equals(daily_costs.index), "Returns and costs must have same index"
+    
+    # Initialize equity array
+    equity_values = np.zeros(len(portfolio_returns))
+    
+    # Starting equity
+    current_equity = initial_capital
+    
+    # Iterate through each day
+    for i, (date, ret) in enumerate(portfolio_returns.items()):
+        cost = daily_costs.loc[date]
+        
+        # Apply return and subtract cost
+        # equity_t = equity_{t-1} * (1 + R_t) - equity_{t-1} * cost_t
+        # Equivalently: equity_t = equity_{t-1} * (1 + R_t - cost_t)
+        current_equity = current_equity * (1.0 + ret - cost)
+        
+        equity_values[i] = current_equity
+    
+    # Create Series
+    equity = pd.Series(equity_values, index=portfolio_returns.index, name='equity')
     
     # Sanity checks
     assert not equity.isna().any(), "Equity curve contains NaNs"
     assert not equity.isin([np.inf, -np.inf]).any(), "Equity curve contains infinities"
     assert (equity > 0).all(), "Equity curve must remain positive"
     
-    equity.name = 'equity'
     return equity
 
 
@@ -164,24 +208,78 @@ def run_backtest(
     -------
     dict
         {
-            'portfolio_returns': pd.Series,
-            'equity': pd.Series,
+            'gross_returns': pd.Series (before costs),
+            'net_returns': pd.Series (after costs),
+            'daily_costs': pd.Series (costs each day),
+            'equity': pd.Series (cumulative wealth),
         }
     """
-    # Calculate portfolio returns
-    portfolio_returns = calculate_portfolio_returns(
+    # Calculate portfolio returns (gross and net)
+    returns_output = calculate_portfolio_returns(
         daily_weights=daily_weights,
         returns=returns,
         transaction_costs=transaction_costs,
     )
     
-    # Calculate equity curve
+    gross_returns = returns_output['gross_returns']
+    net_returns = returns_output['net_returns']
+    daily_costs = returns_output['daily_costs']
+    
+    # Calculate equity curve from gross returns and costs
+    # (apply returns first, then subtract costs)
     equity = calculate_equity_curve(
-        portfolio_returns=portfolio_returns,
+        portfolio_returns=gross_returns,
+        daily_costs=daily_costs,
         initial_capital=initial_capital,
     )
     
+    # Sanity checks (MANDATORY)
+    print("\nPortfolio engine sanity checks...")
+    
+    # Check 1: Equity never becomes NaN
+    assert not equity.isna().any(), "Equity contains NaNs"
+    print("  [OK] Equity never becomes NaN")
+    
+    # Check 2: Equity never becomes negative (unless leverage later)
+    assert (equity > 0).all(), "Equity becomes negative"
+    print("  [OK] Equity never becomes negative")
+    
+    # Check 3: Portfolio returns length = number of trading days - 1
+    # (we lose one day from weight lagging)
+    assert len(gross_returns) == len(returns.index.intersection(daily_weights.index)) - 1, \
+        f"Portfolio returns length incorrect: {len(gross_returns)}"
+    print("  [OK] Portfolio returns length correct (trading days - 1)")
+    
+    # Temporary diagnostic prints
+    print("\nDiagnostic prints:")
+    print("  First 5 gross returns:")
+    for i, (date, ret) in enumerate(gross_returns.head(5).items()):
+        cost = daily_costs.loc[date]
+        print(f"    {date.date()}: {ret:+.6f} (cost: {cost:.6f})")
+    
+    print("  First 5 equity values:")
+    for date, eq in equity.head(5).items():
+        print(f"    {date.date()}: ${eq:.6f}")
+    
+    # Find first rebalance date in equity index
+    first_rebalance = None
+    for date in equity.index:
+        if date in transaction_costs.index:
+            first_rebalance = date
+            break
+    
+    if first_rebalance is not None:
+        first_rebal_idx = equity.index.get_loc(first_rebalance)
+        if first_rebal_idx > 0:
+            equity_before = equity.iloc[first_rebal_idx - 1]
+            equity_at = equity.loc[first_rebalance]
+            print(f"\n  Equity before first rebalance ({equity.index[first_rebal_idx - 1].date()}): ${equity_before:.6f}")
+            print(f"  Equity at first rebalance ({first_rebalance.date()}): ${equity_at:.6f}")
+            print(f"  Change: {(equity_at - equity_before) / equity_before * 100:+.4f}%")
+    
     return {
-        'portfolio_returns': portfolio_returns,
+        'gross_returns': gross_returns,
+        'net_returns': net_returns,
+        'daily_costs': daily_costs,
         'equity': equity,
     }
