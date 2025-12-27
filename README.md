@@ -67,6 +67,13 @@ This project maintains two distinct data layers with strict contracts:
 - Outputs are deterministic
 - No hidden state (verified via hash comparison)
 
+**Determinism:**
+- No randomness in processed pipeline
+- No system-time dependency (no `datetime.now`, no `time.time`)
+- No API calls in processed layers (prices/returns/main)
+- Prices & returns come strictly from disk: CSV → prices.parquet → returns.parquet
+- External fetching (Yahoo) happens only in Day 2 scripts under `scripts/` and `data/loaders/`
+
 **Data Flow:**
 ```
 data/raw/*.csv  →  [data/prices.py]  →  data/processed/prices.parquet
@@ -116,6 +123,31 @@ python main.py
 
 ---
 
+## Data Pipeline & Reproducibility
+
+- **Separation (raw vs processed):** Raw CSVs under `data/raw/` are immutable and audit-friendly; processed Parquet under `data/processed/` is derived-only and safe to regenerate.
+- **Deterministic design:** Processed steps read from disk only (no randomness, no system-time, no API calls). Outputs are byte-for-byte identical across runs.
+- **Regenerate processed data:**
+  ```bash
+  # Rebuild all processed artifacts from raw CSVs
+  rm data/processed/*.parquet
+  python main.py
+  ```
+- **Known limitations:** Yahoo Finance fetching (Day 2 scripts) can be rate-limited or intermittently unreliable. Always persist fetched raw data to `data/raw/` and re-run the processed pipeline from disk.
+
+---
+
+## Data Layer Freeze
+
+- **Frozen Modules:** `data/loaders/*`, `data/prices.py`, `data/returns.py` are considered stable and frozen.
+- **Change Policy:** Do not modify these modules casually. If a bug is found:
+  - Write a focused, reproducible test in `scripts/` or `validation/` that demonstrates the issue.
+  - Patch minimally at the root cause (avoid broad refactors).
+  - Document the fix and rationale in this README and reference the test.
+- **Rationale:** Moving targets kill system stability. Freezing the data layer ensures determinism, repeatability, and reliable downstream behavior.
+
+---
+
 ## Data Pipeline Guarantees
 
 1. **No Look-Ahead Bias**: Returns at time t use only prices at t and t-1
@@ -126,7 +158,9 @@ python main.py
 
 Run verification scripts:
 ```bash
-python scripts/verify_checklist.py     # End-of-Day 3 checklist
-python scripts/verify_eod4_checklist.py # End-of-Day 4 checklist
-python scripts/verify_lookahead.py     # Look-ahead bias check
+python scripts/verify_checklist.py      # End-of-Day 3 checklist
+python scripts/verify_eod4_checklist.py  # End-of-Day 4 checklist
+python scripts/verify_lookahead.py      # Look-ahead bias check
+python scripts/verify_idempotency.py    # Pipeline idempotency test
+python scripts/verify_determinism.py    # Determinism: disk-only, no randomness/time/API
 ```

@@ -246,6 +246,7 @@ def save_returns(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Save to Parquet with compression
+    print(f"Saving processed returns to {output_path}")
     returns.to_parquet(
         output_path,
         engine='pyarrow',

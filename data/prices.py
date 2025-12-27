@@ -11,7 +11,8 @@ them into a single DataFrame with dates as index and tickers as columns.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional, List
+from datetime import date as DateType
 
 import pandas as pd
 
@@ -26,6 +27,10 @@ def load_price_matrix(
     data_dir: str | Path = "data/raw",
     price_column: str = "Adj Close",
     apply_missing_data_policy: bool = True,
+    min_required_days: int = 252,
+    universe: Optional[List[str]] = None,
+    start_date: Optional[DateType] = None,
+    end_date: Optional[DateType] = None,
 ) -> pd.DataFrame:
     """
     Load and combine per-asset CSV files into a clean multi-asset price matrix.
@@ -81,7 +86,9 @@ def load_price_matrix(
         raise FileNotFoundError(f"Data directory not found: {data_path}")
     
     # Find all CSV files in the directory
+    print(f"Loading raw data from disk: {data_path}")
     csv_files = list(data_path.glob("*.csv"))
+    print(f"  Found {len(csv_files)} CSV files")
     
     if not csv_files:
         raise ValueError(f"No CSV files found in {data_path}")
@@ -135,6 +142,7 @@ def load_price_matrix(
     #   columns → AAPL, MSFT, ...
     #   values  → Adjusted Close prices
     price_matrix = pd.DataFrame(price_data)
+    print("Combining assets into price matrix (dates × tickers)...")
     
     # At this stage: NaNs are EXPECTED
     # Date ranges differ across assets → that's fine
@@ -153,8 +161,25 @@ def load_price_matrix(
         print(f"Warning: Found {price_matrix.index.duplicated().sum()} duplicate dates. Keeping first occurrence.")
         price_matrix = price_matrix[~price_matrix.index.duplicated(keep='first')]
     
+    # Optional: Filter to requested universe (in provided order)
+    if universe is not None:
+        missing = sorted(set(universe) - set(price_matrix.columns))
+        if missing:
+            raise ValueError(
+                f"Missing symbols in raw data: {missing}. Ensure CSVs exist in {data_path}."
+            )
+        # Preserve requested order
+        price_matrix = price_matrix[universe]
+
     # Step 2: Sort columns alphabetically for consistency
+    # Note: If you prefer preserving universe order, remove this line
     price_matrix = price_matrix[sorted(price_matrix.columns)]
+
+    # Optional: Apply date range filtering
+    if start_date is not None or end_date is not None:
+        start_ts = pd.Timestamp(start_date) if start_date is not None else price_matrix.index.min()
+        end_ts = pd.Timestamp(end_date) if end_date is not None else price_matrix.index.max()
+        price_matrix = price_matrix.loc[(price_matrix.index >= start_ts) & (price_matrix.index <= end_ts)]
     
     # === Missing Data Policy (Non-Negotiable) ===
     if apply_missing_data_policy:
@@ -204,8 +229,7 @@ def load_price_matrix(
             "FIX: Check missing data policy or raw data quality."
         )
     
-    # Assertion 4: Minimum length > 1 year of data (252 trading days)
-    min_required_days = 252
+    # Assertion 4: Minimum length > 1 year of data (configurable)
     if len(price_matrix) < min_required_days:
         raise ValueError(
             f"Insufficient data: {len(price_matrix)} days < {min_required_days} days (1 year). "
@@ -256,6 +280,7 @@ def save_price_matrix(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Save to Parquet with compression
+    print(f"Saving processed prices to {output_path}")
     price_matrix.to_parquet(
         output_path,
         engine='pyarrow',
@@ -300,56 +325,7 @@ def load_processed_prices(
     return pd.read_parquet(input_path, engine='pyarrow')
 
 
-def get_returns(
-    price_matrix: pd.DataFrame,
-    method: Literal["simple", "log"] = "simple",
-) -> pd.DataFrame:
-    """
-    Calculate returns from a price matrix.
-    
-    Return Type Decision (LOCKED IN):
-    ----------------------------------
-    DEFAULT: Simple returns (RECOMMENDED)
-    
-    Formula: r_t = (P_t / P_{t-1}) - 1
-    
-    Why Simple Returns:
-    1. Easier to interpret: "5% return" is intuitive
-    2. Industry-acceptable: Standard in portfolio management
-    3. Works cleanly with portfolio weights: Portfolio return = weighted average of asset returns
-    4. No complexity overhead: Log returns add mathematical complexity without practical benefit here
-    
-    Log returns are fine for some applications (e.g., time-series modeling), 
-    but simple returns are the right choice for portfolio backtesting.
-
-    Parameters
-    ----------
-    price_matrix : pd.DataFrame
-        Price matrix with dates as index and tickers as columns
-    method : {"simple", "log"}, default="simple"
-        Return calculation method:
-        - "simple": (P_t / P_{t-1}) - 1  [RECOMMENDED]
-        - "log": log(P_t / P_{t-1})
-
-    Returns
-    -------
-    pd.DataFrame
-        Returns matrix with the same structure as input price matrix.
-        First row will be NaN (no prior price to compare).
-
-    Examples
-    --------
-    >>> prices = load_price_matrix()
-    >>> returns = get_returns(prices)  # Uses simple returns by default
-    >>> returns.head()
-    """
-    if method == "simple":
-        return price_matrix.pct_change()
-    elif method == "log":
-        import numpy as np
-        return np.log(price_matrix / price_matrix.shift(1))
-    else:
-        raise ValueError(f"Invalid method: {method}. Must be 'simple' or 'log'")
+# Returns logic is enforced in data/returns.py (hard boundary)
 
 
 if __name__ == "__main__":

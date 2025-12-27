@@ -11,3 +11,21 @@ universe_symbols: [AAPL, MSFT, AMZN, GOOGL, META, NVDA, TSLA, NFLX, ORCL, CRM, A
 # Supported values: daily (initial focus)
 data_frequency: "daily"
 
+# Paths: centralize all filesystem locations
+paths:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  prices_file: "data/processed/prices.parquet"
+  returns_file: "data/processed/returns.parquet"
+
+# Rules: pipeline policies to avoid magic numbers in code
+rules:
+  price_column: "Adj Close"            # column to extract from raw CSVs
+  missing_data_policy: "forward_fill"  # allowed: forward_fill
+  allow_backward_fill: false            # NEVER backward-fill
+  drop_all_nan_rows: true               # drop dates where all assets are NaN
+  min_days_required: 252                # ~1 trading year minimum
+  returns_method: "simple"             # locked-in: simple returns
+  enforce_processed_source_for_returns: true  # returns MUST read processed prices
+  parquet_compression: "snappy"        # Parquet compression
+

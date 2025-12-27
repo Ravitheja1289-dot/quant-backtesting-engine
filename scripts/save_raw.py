@@ -50,6 +50,9 @@ def save_symbol(symbol: str, out_dir: Path, loader: YahooLoader, start, end) -> 
         return False
 
     out_path = out_dir / f"{symbol}.csv"
+    if out_path.exists():
+        print(f"SKIP: {symbol} raw already exists → {out_path} (preserving audit data)")
+        return True
     try:
         # Save exactly as returned; include index; no renames
         df.to_csv(out_path)
